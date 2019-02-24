@@ -180,4 +180,85 @@ class PrometheusExporterTest < Minitest::Test
     client.stop rescue nil
     server.stop rescue nil
   end
+  
+  def test_reports_overall_metrics
+    port = find_free_port
+
+    server = PrometheusExporter::Server::WebServer.new port: port
+    collector = server.collector
+    server.start
+    
+    client = PrometheusExporter::Client.new host: "localhost", port: port, thread_sleep: 0.001
+
+    gauge = client.register(:gauge, "my_gauge", "some gauge")
+    gauge.observe(1)
+    gauge.observe(2)
+    client.flush
+    
+    body = nil
+
+    Net::HTTP.new("localhost", port).start do |http|
+      request = Net::HTTP::Get.new "/metrics"
+      http.request(request) do |response|
+        body = response.body
+      end
+    end
+
+    assert_match(/collector_working 1/, body)
+    assert_match(/collector_metrics_total 2/, body)
+    assert_match(/collector_sessions_total 1/, body)
+    assert_match(/collector_bad_metrics_total 0/, body)
+    assert_match(/collector_info{version="#{PrometheusExporter::VERSION}"} 1/, body)
+    assert_match(/my_gauge 2/, body)
+
+  ensure
+    server.stop rescue nil
+    client.stop rescue nil
+  end
+
+  def test_bad_metric_handling
+    
+    port = find_free_port
+
+    server = PrometheusExporter::Server::WebServer.new port: port
+    collector = server.collector
+    server.start
+
+    client = PrometheusExporter::Client.new host: "localhost", port: port, thread_sleep: 0.001
+
+    gauge1 = client.register(:gauge, "my_gauge1", "some gauge1")
+    gauge2 = client.register(:gauge, "my_gauge2", "some gauge2")
+    gauge3 = client.register(:gauge, "my_gauge3", "some gauge2")
+    gauge1.observe(1)
+    gauge2.observe(1)
+    gauge3.observe(1)
+    client.send('JUNK')
+    gauge2.observe(2)   # Observation should no longer be lost following an invalid metric chunk
+    client.flush
+    gauge3.observe(3)   # Should no longer result in a broken pipe
+    client.send('JUNK') 
+    client.flush
+
+    body = nil
+
+    Net::HTTP.new("localhost", port).start do |http|
+     request = Net::HTTP::Get.new "/metrics"
+     http.request(request) do |response|
+       body = response.body
+     end
+    end
+  
+    assert_match(/collector_working 1/, body)
+    assert_match(/collector_metrics_total 7/, body)
+    assert_match(/collector_sessions_total 1/, body)
+    assert_match(/collector_bad_metrics_total 2/, body)
+    assert_match(/my_gauge1 1/, body)
+    assert_match(/my_gauge2 2/, body) 
+    assert_match(/my_gauge3 3/, body)
+    
+  ensure
+    server.stop rescue nil
+    client.stop rescue nil
+  end
+  
 end

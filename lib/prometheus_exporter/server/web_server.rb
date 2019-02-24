@@ -14,14 +14,14 @@ module PrometheusExporter::Server
       @verbose = verbose
 
       @metrics_total = PrometheusExporter::Metric::Counter.new("collector_metrics_total", "Total metrics processed by exporter web.")
-
       @sessions_total = PrometheusExporter::Metric::Counter.new("collector_sessions_total", "Total send_metric sessions processed by exporter web.")
-
       @bad_metrics_total = PrometheusExporter::Metric::Counter.new("collector_bad_metrics_total", "Total mis-handled metrics by collector.")
+      @metrics_info = PrometheusExporter::Metric::Gauge.new("collector_info", "prometheus_exporter info.")
 
       @metrics_total.observe(0)
       @sessions_total.observe(0)
       @bad_metrics_total.observe(0)
+      @metrics_info.observe(1, {version: PrometheusExporter::VERSION})
 
       access_log, logger = nil
 
@@ -75,6 +75,10 @@ module PrometheusExporter::Server
 
     def handle_metrics(req, res)
       @sessions_total.observe
+      # Assume success
+      res.status = 200
+      res.body = 'OK'
+      # Attempt to process all chunks, even after an error
       req.body do |block|
         begin
           @metrics_total.observe
@@ -87,14 +91,10 @@ module PrometheusExporter::Server
             STDERR.puts
           end
           @bad_metrics_total.observe
-          res.body = "Bad Metrics #{e}"
           res.status = e.respond_to?(:status_code) ? e.status_code : 500
-          return
+          res.body = "Bad Metrics #{e}"
         end
       end
-
-      res.body = "OK"
-      res.status = 200
     end
 
     def start
@@ -123,7 +123,7 @@ module PrometheusExporter::Server
       end
 
       metrics = []
-
+      
       metrics << add_gauge(
         "collector_working",
         "Is the master process collector able to collect metrics",
@@ -139,6 +139,7 @@ module PrometheusExporter::Server
       metrics << @metrics_total
       metrics << @sessions_total
       metrics << @bad_metrics_total
+      metrics << @metrics_info
 
       <<~TEXT
       #{metrics.map(&:to_prometheus_text).join("\n\n")}
